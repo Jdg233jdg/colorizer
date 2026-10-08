@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 
 export async function POST(request: NextRequest) {
   try {
-    const { image, prompt } = await request.json();
+    const { image } = await request.json();
 
     if (!image) {
       return NextResponse.json({ error: 'Image is required' }, { status: 400 });

@@ -53,6 +53,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       image: `data:image/png;base64,${base64Image}`,
     });
+
   } catch (error) {
     console.error('Colorize error:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });

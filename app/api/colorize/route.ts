@@ -2,20 +2,46 @@ import { NextRequest, NextResponse } from 'next/server';
 
 export async function POST(request: NextRequest) {
   try {
-    const { image } = await request.json();
-
-    if (!image) {
-      return NextResponse.json({ error: 'Image is required' }, { status: 400 });
-    }
-
     const apiKey = process.env.HUGGINGFACE_API_KEY;
     if (!apiKey) {
       return NextResponse.json({ error: 'API key not configured' }, { status: 500 });
     }
 
-    // Strip the base64 header and convert to binary
-    const base64Data = image.replace(/^data:image\/\w+;base64,/, '');
-    const imageBuffer = Buffer.from(base64Data, 'base64');
+    let imageBytes: Uint8Array;
+    const contentType = request.headers.get('content-type') ?? '';
+
+    if (contentType.includes('multipart/form-data')) {
+      const formData = await request.formData();
+      const image = formData.get('image');
+
+      if (!(image instanceof File)) {
+        return NextResponse.json({ error: 'Image file is required' }, { status: 400 });
+      }
+
+      imageBytes = Buffer.from(await image.arrayBuffer());
+    } else {
+      const body = await request.json().catch(() => null);
+      const image = body?.image;
+
+      if (typeof image !== 'string') {
+        return NextResponse.json({ error: 'Image is required' }, { status: 400 });
+      }
+
+      const base64Data = image.replace(/^data:image\/\w+;base64,/, '').replace(/\s/g, '');
+      if (!base64Data) {
+        return NextResponse.json({ error: 'Invalid image data' }, { status: 400 });
+      }
+
+      imageBytes = Buffer.from(base64Data, 'base64');
+    }
+
+    if (imageBytes.length === 0) {
+      return NextResponse.json({ error: 'Invalid image data' }, { status: 400 });
+    }
+
+    const imageBody = new Blob([Uint8Array.from(imageBytes)], {
+      type: 'application/octet-stream',
+    });
 
     // Send the raw image binary to the colorization model
     const response = await fetch(
@@ -26,32 +52,50 @@ export async function POST(request: NextRequest) {
           Authorization: 'Bearer ' + apiKey,
           'Content-Type': 'application/octet-stream',
         },
-        body: imageBuffer,
+        body: imageBody,
       }
     );
 
     if (!response.ok) {
-      const errorText = await response.text();
-      console.error('HuggingFace error:', response.status, errorText);
+      const responseType = response.headers.get('content-type') ?? '';
+      const errorBody = responseType.includes('application/json')
+        ? await response.json().catch(() => ({}))
+        : await response.text();
+
+      console.error('HuggingFace error:', response.status, errorBody);
 
       if (response.status === 503) {
+        const estimatedTime = typeof errorBody === 'object' ? errorBody?.estimated_time : undefined;
+        const waitMessage =
+          typeof estimatedTime === 'number'
+            ? `AI model is warming up — wait ${Math.ceil(estimatedTime)} seconds and try again.`
+            : 'AI model is warming up — wait 20 seconds and try again.';
+
         return NextResponse.json(
-          { error: 'AI model is warming up — wait 20 seconds and try again.' },
+          { error: waitMessage },
           { status: 503 }
         );
       }
 
+      const upstreamError =
+        typeof errorBody === 'object' ? errorBody?.error ?? errorBody?.message : errorBody;
+      const status = response.status >= 500 ? 502 : response.status;
+
       return NextResponse.json(
-        { error: 'Colorization failed. Please try again.' },
-        { status: response.status }
+        { error: upstreamError || 'Colorization failed. Please try again.' },
+        { status }
       );
     }
 
     const imageData = await response.arrayBuffer();
-    const base64Image = Buffer.from(imageData).toString('base64');
+    const outputContentType = response.headers.get('content-type') ?? 'image/png';
 
-    return NextResponse.json({
-      image: `data:image/png;base64,${base64Image}`,
+    return new NextResponse(imageData, {
+      status: 200,
+      headers: {
+        'Content-Type': outputContentType.startsWith('image/') ? outputContentType : 'image/png',
+        'Cache-Control': 'no-store',
+      },
     });
 
   } catch (error) {

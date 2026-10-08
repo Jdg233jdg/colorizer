@@ -7,7 +7,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'API key not configured' }, { status: 500 });
     }
 
-    let imageBytes: Uint8Array;
+    let imageBuffer: ArrayBuffer;
+    let imageByteLength = 0;
     const contentType = request.headers.get('content-type') ?? '';
 
     if (contentType.includes('multipart/form-data')) {
@@ -18,7 +19,8 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: 'Image file is required' }, { status: 400 });
       }
 
-      imageBytes = Buffer.from(await image.arrayBuffer());
+      imageBuffer = await image.arrayBuffer();
+      imageByteLength = imageBuffer.byteLength;
     } else {
       const body = await request.json().catch(() => null);
       const image = body?.image;
@@ -32,16 +34,17 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: 'Invalid image data' }, { status: 400 });
       }
 
-      imageBytes = Buffer.from(base64Data, 'base64');
+      const decodedBuffer = Buffer.from(base64Data, 'base64');
+      imageBuffer = decodedBuffer.buffer.slice(
+        decodedBuffer.byteOffset,
+        decodedBuffer.byteOffset + decodedBuffer.byteLength
+      ) as ArrayBuffer;
+      imageByteLength = decodedBuffer.byteLength;
     }
 
-    if (imageBytes.length === 0) {
+    if (imageByteLength === 0) {
       return NextResponse.json({ error: 'Invalid image data' }, { status: 400 });
     }
-
-    const imageBody = new Blob([Uint8Array.from(imageBytes)], {
-      type: 'application/octet-stream',
-    });
 
     // Send the raw image binary to the colorization model
     const response = await fetch(
@@ -52,7 +55,7 @@ export async function POST(request: NextRequest) {
           Authorization: 'Bearer ' + apiKey,
           'Content-Type': 'application/octet-stream',
         },
-        body: imageBody,
+        body: Buffer.from(imageBuffer),
       }
     );
 
